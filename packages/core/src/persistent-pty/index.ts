@@ -1,6 +1,5 @@
 export * as PersistentPty from "./index.js"
 
-import os from "node:os"
 import path from "node:path"
 import { Context, Effect, Layer, Schema } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
@@ -23,7 +22,11 @@ import { resolveBinary } from "#persistent-pty-binary"
 export type { Role, StreamEvent } from "./daemon.js"
 export { Handoff } from "@opencode/schema/persistent-pty"
 
-export const Options = Schema.Struct({ handoff: Schema.optional(Handoff) })
+export const Options = Schema.Struct({
+  handoff: Schema.optional(Handoff),
+  /** Parent of per-server daemon runtime directories; defaults to `<state>/pty`. */
+  root: Schema.optional(Schema.String),
+})
 export type Options = typeof Options.Type
 
 export type Info = PersistentPty.Info
@@ -122,7 +125,7 @@ const makeLayer = (options: Options = {}) =>
       const runFork = Effect.runForkWith(context)
       let binary: Promise<string> | undefined
       const daemon = yield* makeDaemonTransport(
-        options.handoff?.directory ?? runtimeDirectory(),
+        path.join(options.root ?? path.join(global.state, "pty"), crypto.randomUUID()),
         () =>
           (binary ??= resolveBinary(global.bin).catch((error) => {
             binary = undefined
@@ -381,18 +384,6 @@ const unexpected = (response: WireResponse) =>
 
 const unavailable = (error: unknown) =>
   new UnavailableError({ message: error instanceof Error ? error.message : String(error) })
-
-const runtimeDirectory = () => {
-  const root =
-    process.env.OPENCODE_PTY_RUNTIME_DIR ??
-    (process.env.XDG_RUNTIME_DIR
-      ? path.join(process.env.XDG_RUNTIME_DIR, "opencode-pty")
-      : path.join(
-          os.tmpdir(),
-          `opencode-pty-${typeof process.getuid === "function" ? process.getuid() : process.env.USER || "unknown"}`,
-        ))
-  return path.join(root, crypto.randomUUID())
-}
 
 function toInfo(value: WireTerminal): Info {
   const status = value.lifecycle.status
