@@ -431,19 +431,102 @@ describe("Anthropic Messages route", () => {
         (yield* compileRequest(
           LLM.request({
             model: opus48,
-            messages: [Message.user("Before."), Message.system("One."), Message.system("Two.")],
+            messages: [
+              Message.user("Start."),
+              Message.assistant("One."),
+              Message.system("Update."),
+              Message.assistant("Two."),
+            ],
             cache: "none",
           }),
         )).body.messages,
       ).toEqual([
-        {
-          role: "user",
-          content: [
-            { type: "text", text: "Before." },
-            { type: "text", text: "<system-update>\nOne.\n</system-update>" },
-            { type: "text", text: "<system-update>\nTwo.\n</system-update>" },
+        { role: "user", content: [{ type: "text", text: "Start." }] },
+        { role: "assistant", content: [{ type: "text", text: "One." }] },
+        { role: "user", content: [{ type: "text", text: "<system-update>\nUpdate.\n</system-update>" }] },
+        { role: "assistant", content: [{ type: "text", text: "Two." }] },
+      ])
+    }),
+  )
+
+  it.effect("moves system updates to the next assistant turn and sends consecutive updates together", () =>
+    Effect.gen(function* () {
+      const lower = (messages: ReadonlyArray<Message>) =>
+        compileRequest(LLM.request({ model: opus48, messages: [...messages], cache: "none" })).pipe(
+          Effect.map((prepared) => prepared.body.messages),
+        )
+      const system = (text: string) => ({ role: "system", content: [{ type: "text", text, cache_control: undefined }] })
+      const user = (text: string) => ({ role: "user", content: [{ type: "text", text }] })
+      const assistant = (text: string) => ({ role: "assistant", content: [{ type: "text", text }] })
+
+      expect(
+        yield* lower([
+          Message.user("Fix it."),
+          Message.assistant("Done."),
+          Message.system("Update."),
+          Message.user("Next."),
+        ]),
+      ).toEqual([user("Fix it."), assistant("Done."), user("Next."), system("Update.")])
+      expect(yield* lower([Message.user("Before."), Message.system("One."), Message.system("Two.")])).toEqual([
+        user("Before."),
+        system("One."),
+        system("Two."),
+      ])
+      expect(
+        yield* lower([
+          Message.user("Fix it."),
+          Message.assistant("Done."),
+          Message.system("One."),
+          Message.user("Next."),
+          Message.system("Two."),
+          Message.assistant("After."),
+        ]),
+      ).toEqual([
+        user("Fix it."),
+        assistant("Done."),
+        user("Next."),
+        system("One."),
+        system("Two."),
+        assistant("After."),
+      ])
+      expect(
+        yield* lower([
+          Message.user("Use the tool."),
+          Message.assistant([ToolCallPart.make({ id: "call_1", name: "lookup", input: {} })]),
+          Message.tool({ id: "call_1", name: "lookup", result: "Done." }),
+          Message.system("Update."),
+          Message.user("Also check tests."),
+        ]),
+      ).toEqual([
+        user("Use the tool."),
+        { role: "assistant", content: [{ type: "tool_use", id: "call_1", name: "lookup", input: {} }] },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: "call_1", content: '"Done."' }] },
+        user("Also check tests."),
+        system("Update."),
+      ])
+    }),
+  )
+
+  it.effect("keeps wrapped system updates in place for models without native system updates", () =>
+    Effect.gen(function* () {
+      const prepared = yield* compileRequest(
+        LLM.request({
+          model,
+          messages: [
+            Message.user("Fix it."),
+            Message.assistant("Done."),
+            Message.system("Update."),
+            Message.user("Next."),
           ],
-        },
+          cache: "none",
+        }),
+      )
+
+      expect(prepared.body.messages).toEqual([
+        { role: "user", content: [{ type: "text", text: "Fix it." }] },
+        { role: "assistant", content: [{ type: "text", text: "Done." }] },
+        { role: "user", content: [{ type: "text", text: "<system-update>\nUpdate.\n</system-update>" }] },
+        { role: "user", content: [{ type: "text", text: "Next." }] },
       ])
     }),
   )
