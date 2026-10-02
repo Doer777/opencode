@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "@opencode/ai"
 import { nonFiniteNumberDefinition, signatureJsonSchema } from "@opencode/codemode"
+import { emptyInputJsonSchema } from "@opencode/ai/tool"
 import { Tool } from "@opencode/schema/tool"
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec"
 import { Cache, Effect, JsonPointer, JsonSchema, Schema, SchemaIssue, SchemaRepresentation } from "effect"
@@ -158,23 +159,7 @@ const inputJsonSchema = (schema: Tool.ValueSchema<any>, codeMode: boolean): Json
   if (schema === undefined || schema === null) return {}
   if (isStandardSchema(schema)) return standardJsonSchema(schema, "input")
   if (!Schema.isSchema(schema)) return schema
-  const json = toJsonSchema(schema, codeMode)
-  // Empty Effect structs describe non-null values, but tool parameters must be
-  // objects. Normalize after inlining named schemas, retaining their metadata.
-  if (
-    schema.ast._tag === "Objects" &&
-    schema.ast.propertySignatures.length === 0 &&
-    schema.ast.indexSignatures.length === 0 &&
-    schema.ast.encoding === undefined &&
-    schema.ast.checks === undefined &&
-    isRecord(json.not) &&
-    json.not.type === "null" &&
-    Object.keys(json.not).length === 1
-  ) {
-    const { not: _, ...metadata } = json
-    return { ...metadata, type: "object", properties: {}, additionalProperties: false }
-  }
-  return json
+  return emptyInputJsonSchema(schema) ?? toJsonSchema(schema, codeMode)
 }
 
 const outputJsonSchema = (schema: Tool.ValueSchema<any>, codeMode: boolean): JsonSchema.JsonSchema => {
