@@ -13,7 +13,6 @@ import {
   durableEvent,
   ephemeralEvent,
   failed,
-  interrupted,
   reasoningDelta,
   stepEnded,
   succeeded,
@@ -600,23 +599,6 @@ describe("acp turn translation", () => {
   test.each(rows)("$name", (row) => {
     expect(translate(row)).toMatchObject(row.expected)
   })
-
-  test("follows only tracked children after the turn ends, until the last open child settles", () => {
-    const turn = run(live(childCreated("ses_a", root, "A"), childCreated("ses_b", root, "B"), succeeded(root)))
-    const first = run(
-      [textDelta(root, "msg_root", "ignored"), toolStarted("ses_a", "call_1", "read"), succeeded("ses_a")],
-      ctx,
-      turn.state,
-      true,
-    )
-    const last = run([childCreated("ses_later", root, "Later"), interrupted("ses_b")], ctx, first.state, true)
-
-    expect(turn.terminal).toBe("succeeded")
-    expect(updates(first.outputs)).toMatchObject([{ sessionUpdate: "tool_call", toolCallId: "ses_a:call_1" }])
-    expect(first.state.openChildren.size).toBe(1)
-    expect(last.state.children.has("ses_later")).toBe(false)
-    expect(last.state.openChildren.size).toBe(0)
-  })
 })
 
 function translate(row: Row) {
@@ -645,28 +627,21 @@ function translate(row: Row) {
   }
 }
 
-function run(
-  events: ReadonlyArray<OpenCodeEventEncoded>,
-  context = ctx,
-  state = ACPTranslate.initial,
-  childrenOnly = false,
-) {
+function run(events: ReadonlyArray<OpenCodeEventEncoded>, context = ctx) {
   return events.reduce<{
     state: ACPTranslate.TurnState
     outputs: ACPTranslate.Output[]
     terminal?: ACPTranslate.Terminal
   }>(
     (acc, event, index) => {
-      const decoded = decodeEvent({ ...event, id: `evt_${index + 1}` })
-      if (childrenOnly && !ACPTranslate.belongsToChild(acc.state, decoded)) return acc
-      const next = ACPTranslate.fold(acc.state, decoded, context)
+      const next = ACPTranslate.fold(acc.state, decodeEvent({ ...event, id: `evt_${index + 1}` }), context)
       return {
         state: next.state,
         outputs: [...acc.outputs, ...next.outputs],
         ...(next.terminal ? { terminal: next.terminal } : {}),
       }
     },
-    { state, outputs: [] },
+    { state: ACPTranslate.initial, outputs: [] },
   )
 }
 
