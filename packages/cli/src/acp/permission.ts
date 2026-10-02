@@ -10,7 +10,16 @@ import { ACPAsk } from "./ask"
 import { ACPChild } from "./child"
 import { ACPClient } from "./client"
 import type { ACPConnection } from "./connection"
-import { absolutePath, filePath, patchHunks, pendingToolCall, stringValue, toLocations, type ToolInput } from "./tool"
+import {
+  absolutePath,
+  canonicalName,
+  filePath,
+  patchHunks,
+  pendingToolCall,
+  stringValue,
+  toLocations,
+  type ToolInput,
+} from "./tool"
 
 type PermissionEvent = Extract<OpenCodeEvent, { type: "permission.asked" }>
 type Tool = { readonly id: string; readonly name: string; readonly input: ToolInput }
@@ -90,8 +99,7 @@ const permissionPreviews = Effect.fnUntraced(function* (
   metadata: ToolInput | undefined,
   cwd: string,
 ) {
-  const tool = toolName.toLocaleLowerCase()
-  if (tool === "patch" || tool === "apply_patch") return yield* patchPreviews(input, cwd)
+  if (canonicalName(toolName) === "patch") return yield* patchPreviews(input, cwd)
   const files = Option.getOrElse(decodeFiles(metadata?.files), () => [])
   const previews = yield* Effect.forEach(
     files,
@@ -132,7 +140,7 @@ function diff(path: string, oldText: string | null, newText: string) {
 
 function permissionTitle(toolName: string, input: ToolInput, previews: ReadonlyArray<Preview>) {
   if (previews.length > 1) return `${previews.length} files`
-  switch (toolName.toLocaleLowerCase()) {
+  switch (canonicalName(toolName)) {
     case "external_directory":
       return stringValue(input.description) ?? stringValue(input.command) ?? stringValue(input.parentDir)
     case "webfetch":
@@ -146,7 +154,6 @@ function permissionTitle(toolName: string, input: ToolInput, previews: ReadonlyA
     case "edit":
     case "write":
     case "patch":
-    case "apply_patch":
       return filePath(input) ?? previews[0]?.path
     default:
       return undefined
