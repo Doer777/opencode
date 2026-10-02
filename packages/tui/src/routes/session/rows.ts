@@ -17,6 +17,8 @@ import {
   type CacheUsage,
   type PartRef,
   type ProjectionEntry,
+  type SessionEntry,
+  type SessionNode,
   type SessionRow,
   type Verbosity,
   defaultVerbosity,
@@ -47,7 +49,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
   const data = useData()
   const client = useClient()
   const config = useConfig()
-  const [rows, setRows] = createStore<SessionRow[]>([])
+  const [rows, setRows] = createStore<KeyedRow[]>([])
   const revertBoundary = () => data.session.get(sessionID())?.revert?.messageID
   const turnTokens = () => Boolean(config.data.debug?.turn_tokens)
   const verbosity = () => config.data.session?.verbosity ?? defaultVerbosity
@@ -66,7 +68,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
       inputs,
       turnTokens(),
       verbosity(),
-    )
+    ).map(keyed)
     partitionPending(rows, pendingPermissions())
     const position = rows.findIndex((row) => row.type === "message" && inputs.has(row.messageID))
     rows.splice(
@@ -74,9 +76,15 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
       0,
       ...pending
         .filter((item) => item.type === "compaction")
-        .map((item): SessionRow => ({ type: "compaction-queued", inboxID: item.id })),
+        .map((item) => keyed({ type: "compaction-queued", inboxID: item.id })),
     )
     return rows
+  }
+
+  // Rows have no `id`, Solid's default reconcile key. Matching by position instead would move every
+  // row into another store object whenever older history is prepended, remounting the whole transcript.
+  function rebuild() {
+    setRows(reconcile(reduce(), { key: "key" }))
   }
 
   function pendingPermissions() {
@@ -99,13 +107,13 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
   createEffect(
     on([sessionID, () => client.connection.status()], ([id, status]) => {
       if (status !== "connected") return
-      setRows(reconcile(reduce()))
+      rebuild()
       void data.session.pending.sync(id).catch(() => undefined)
       void data.session.message
         .sync(id)
         .then(async () => {
           if (sessionID() !== id) return
-          setRows(reconcile(reduce()))
+          rebuild()
           // Restoration waits for complete boundary groups so saved group IDs resolve.
           await completeGroupBoundary({
             rows,
@@ -122,15 +130,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
 
   // Re-reduce when the revert boundary changes (stage/clear/commit). These reactions defer
   // their first run: the mount effect above has already reduced the same state.
-  createEffect(
-    on(
-      revertBoundary,
-      () => {
-        setRows(reconcile(reduce()))
-      },
-      { defer: true },
-    ),
-  )
+  createEffect(on(revertBoundary, rebuild, { defer: true }))
 
   createEffect(
     on(
@@ -140,7 +140,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
           if (item.type === "user" && item.delivery === "queue") return [`${item.id}:queue`]
           return []
         }),
-      () => setRows(reconcile(reduce())),
+      rebuild,
       { defer: true },
     ),
   )
@@ -166,12 +166,12 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
                 ]
               : [],
         ),
-      () => setRows(reconcile(reduce())),
+      rebuild,
       { defer: true },
     ),
   )
 
-  createEffect(on([turnTokens, verbosity], () => setRows(reconcile(reduce())), { defer: true }))
+  createEffect(on([turnTokens, verbosity], rebuild, { defer: true }))
 
   const appendMessage = (messageID: string) =>
     setRows(
@@ -182,7 +182,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
         const index =
           message?.type === "compaction" && pending ? queuedStart(draft) : pending ? draft.length : queuedStart(draft)
         if (!pending) completePrevious(draft, index)
-        draft.splice(index, 0, { type: "message", messageID })
+        draft.splice(index, 0, keyed({ type: "message", messageID }))
       }),
     )
 
@@ -190,7 +190,11 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
     setRows(
       produce((draft) => {
         if (!hasPart(draft, ref)) {
-          append(draft, ref, part, queuedStart(draft), verbosity())
+          const index = queuedStart(draft)
+          const length = draft.length
+          append(draft, ref, part, index, verbosity())
+          // The part either joined the group before `index`, which keeps its key, or became a new row there.
+          if (draft.length > length) draft[index].key = rowKey(draft[index])
           return
         }
         if (part.type !== "reasoning" || part.time?.completed === undefined) return
@@ -210,7 +214,7 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
         if (draft.some((row) => row.type === "assistant-footer" && row.messageID === messageID)) return
         const index = queuedStart(draft)
         completePrevious(draft, index)
-        draft.splice(index, 0, { type: "assistant-footer", messageID })
+        draft.splice(index, 0, keyed({ type: "assistant-footer", messageID }))
       }),
     )
 
@@ -297,17 +301,37 @@ export function createSessionRows(sessionID: Accessor<string>, onSynced?: (sessi
     data.on("session.step.ended", (event) => {
       if (event.data.sessionID !== sessionID() || ["tool-calls", "unknown"].includes(event.data.finish)) return
       appendFooter(event.data.assistantMessageID)
-      if (turnTokens()) setRows(reconcile(reduce()))
+      if (turnTokens()) rebuild()
     }),
     data.on("session.step.failed", (event) => {
       if (event.data.sessionID !== sessionID()) return
       appendFooter(event.data.assistantMessageID)
-      if (turnTokens()) setRows(reconcile(reduce()))
+      if (turnTokens()) rebuild()
     }),
   ]
   onCleanup(() => subscriptions.forEach((unsubscribe) => unsubscribe()))
 
   return rows
+}
+
+type KeyedRow = SessionRow & { key: string }
+
+function keyed(row: SessionRow): KeyedRow {
+  return { ...row, key: rowKey(row) }
+}
+
+function rowKey(row: SessionRow): string {
+  // Later parts join a group in place; older history extending it backwards makes a new row.
+  if (row.type === "group") return `group:${row.kind}:${rowKey(firstEntry(row.children))}`
+  if (row.type === "part") return `part:${row.ref.messageID}:${row.ref.partID}`
+  if (row.type === "compaction-queued") return `compaction-queued:${row.inboxID}`
+  if (row.type === "turn-usage") return `turn-usage:${row.messageIDs[0]}`
+  return `${row.type}:${row.messageID}`
+}
+
+function firstEntry(nodes: readonly SessionNode[]): SessionEntry {
+  const node = nodes[0]
+  return node.type === "entry" ? node.entry : firstEntry(node.children)
 }
 
 export function reduceSessionRows(
