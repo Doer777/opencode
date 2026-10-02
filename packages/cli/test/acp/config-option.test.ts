@@ -52,12 +52,25 @@ describe("acp config options", () => {
   })
 
   test.each([
-    ["openai/gpt-5", "openai/gpt-5"],
-    ["openai/gpt-5/low", "openai/gpt-5#low"],
-    ["anthropic/claude/sonnet-4", "anthropic/claude/sonnet-4"],
-    ["anthropic/claude/sonnet-4/high", "anthropic/claude/sonnet-4#high"],
-    ["anthropic/claude/sonnet-4/missing", "anthropic/claude/sonnet-4/missing"],
+    ["openai/gpt-5", { providerID: Provider.ID.openai, id: Model.ID.make("gpt-5") }],
+    [
+      "openai/gpt-5/low",
+      { providerID: Provider.ID.openai, id: Model.ID.make("gpt-5"), variant: Model.VariantID.make("low") },
+    ],
+    ["anthropic/claude/sonnet-4", { providerID: Provider.ID.anthropic, id: Model.ID.make("claude/sonnet-4") }],
+    [
+      "anthropic/claude/sonnet-4/high",
+      {
+        providerID: Provider.ID.anthropic,
+        id: Model.ID.make("claude/sonnet-4"),
+        variant: Model.VariantID.make("high"),
+      },
+    ],
+    [
+      "anthropic/claude/sonnet-4/missing",
+      { providerID: Provider.ID.anthropic, id: Model.ID.make("claude/sonnet-4/missing") },
+    ],
   ])("parses the model selection %s, preferring exact slash-containing model ids", (value, expected) => {
-    expect(parseModelSelection(value, catalog)).toEqual(Model.Ref.parse(expected))
+    expect(parseModelSelection(value, catalog.models)).toEqual(expected)
   })
 })

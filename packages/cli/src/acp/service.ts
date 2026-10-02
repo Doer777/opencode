@@ -77,9 +77,9 @@ export function make(input: {
     return configOptions(yield* input.catalog.get(attached.cwd), yield* Ref.get(attached.selection))
   })
 
-  const withReload = <A>(attached: Attached, select: Effect.Effect<A, ACPError.Failure>) => {
-    const retry = () => input.catalog.reload(attached.cwd).pipe(Effect.andThen(select))
-    return select.pipe(
+  const withReload = <A>(attached: Attached, attempt: Effect.Effect<A, ACPError.Failure>) => {
+    const retry = () => input.catalog.reload(attached.cwd).pipe(Effect.andThen(attempt))
+    return attempt.pipe(
       Effect.catchTags({ ACPInvalidModelError: retry, ACPInvalidModeError: retry, ACPInvalidEffortError: retry }),
     )
   }

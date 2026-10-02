@@ -84,8 +84,12 @@ export const resolveChange = Effect.fnUntraced(function* (
   switch (configId) {
     case "model":
       return { model: yield* requireModel(catalog, value, current) }
-    case "effort":
-      return { model: yield* requireEffort(catalog, value, current) }
+    case "effort": {
+      const model = findModel(catalog.models, current)
+      if (!model || (value !== DEFAULT_VARIANT_VALUE && !model.variants.some((variant) => variant.id === value)))
+        return yield* new ACPError.InvalidEffortError({ effort: value })
+      return { model: { ...current, variant: Model.VariantID.make(value) } }
+    }
     case "mode": {
       const mode = catalog.modes.find((item) => item.id === value)
       if (!mode) return yield* new ACPError.InvalidModeError({ mode: value })
@@ -96,8 +100,8 @@ export const resolveChange = Effect.fnUntraced(function* (
   }
 })
 
-export function parseModelSelection(value: string, catalog: Catalog): Model.Ref {
-  const providerID = catalog.models
+export function parseModelSelection(value: string, models: ReadonlyArray<Model.Info>): Model.Ref {
+  const providerID = models
     .map((model) => model.providerID)
     .toSorted()
     .find((id) => value.startsWith(`${id}/`))
@@ -107,18 +111,18 @@ export function parseModelSelection(value: string, catalog: Catalog): Model.Ref 
     return { providerID: Provider.ID.make(value.slice(0, separator)), id: Model.ID.make(value.slice(separator + 1)) }
   }
   const id = Model.ID.make(value.slice(providerID.length + 1))
-  if (findModel(catalog.models, { providerID, id })) return { providerID, id }
+  if (findModel(models, { providerID, id })) return { providerID, id }
   const separator = id.lastIndexOf("/")
   const baseID = Model.ID.make(separator === -1 ? id : id.slice(0, separator))
   const variant = separator === -1 ? undefined : id.slice(separator + 1)
-  const model = findModel(catalog.models, { providerID, id: baseID })
+  const model = findModel(models, { providerID, id: baseID })
   if (model && variant && model.variants.some((item) => item.id === variant))
     return { providerID, id: baseID, variant: Model.VariantID.make(variant) }
   return { providerID, id }
 }
 
 const requireModel = Effect.fnUntraced(function* (catalog: Catalog, value: string, current: Model.Ref) {
-  const selected = parseModelSelection(value, catalog)
+  const selected = parseModelSelection(value, catalog.models)
   const model = findModel(catalog.models, selected)
   if (!model) return yield* new ACPError.InvalidModelError({ providerId: selected.providerID, modelId: value })
   const selectedVariant = model.variants.find((variant) => variant.id === selected.variant)
@@ -131,13 +135,6 @@ const requireModel = Effect.fnUntraced(function* (catalog: Catalog, value: strin
       ? current.variant
       : undefined)
   return { providerID: model.providerID, id: model.id, variant } satisfies Model.Ref
-})
-
-const requireEffort = Effect.fnUntraced(function* (catalog: Catalog, effort: string, current: Model.Ref) {
-  const model = findModel(catalog.models, current)
-  if (!model || (effort !== DEFAULT_VARIANT_VALUE && !model.variants.some((variant) => variant.id === effort)))
-    return yield* new ACPError.InvalidEffortError({ effort })
-  return { ...current, variant: Model.VariantID.make(effort) } satisfies Model.Ref
 })
 
 function selectVariant(variant: string | undefined, variants: readonly string[]) {

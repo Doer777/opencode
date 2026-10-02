@@ -34,7 +34,7 @@ export interface Interface {
 type Entry = {
   readonly attached: Attached
   readonly scope: Scope.Closeable
-  readonly selected: Queue.Queue<Selection>
+  readonly selected: Queue.Queue<Change>
 }
 
 type SelectedEvent = Extract<OpenCodeEvent, { type: "session.model.selected" | "session.agent.selected" }>
@@ -131,7 +131,7 @@ export const make = Effect.fnUntraced(function* (input: {
           selection: yield* Ref.make<Selection>({ model: session.model, modeID: session.agent }),
         },
         scope: Scope.forkUnsafe(scope),
-        selected: yield* Queue.unbounded<Selection>(),
+        selected: yield* Queue.unbounded<Change>(),
       }
       // Swap synchronously so concurrent attaches of one ID cannot both keep a scope.
       const replaced = sessions.get(session.id)
@@ -183,13 +183,11 @@ export const make = Effect.fnUntraced(function* (input: {
     // Update selection before switching so the echoed event is a no-op.
     select: Effect.fnUntraced(function* (attached, change) {
       yield* Ref.update(attached.selection, (selection) => ({ ...selection, ...change }))
-      if ("model" in change)
-        return yield* input.client.session
-          .switchModel({ sessionID: attached.id, model: change.model })
-          .pipe(Effect.catch(ACPClient.classify))
-      yield* input.client.session
-        .switchAgent({ sessionID: attached.id, agent: change.modeID })
-        .pipe(Effect.catch(ACPClient.classify))
+      yield* (
+        "model" in change
+          ? input.client.session.switchModel({ sessionID: attached.id, model: change.model })
+          : input.client.session.switchAgent({ sessionID: attached.id, agent: change.modeID })
+      ).pipe(Effect.catch(ACPClient.classify))
     }),
   } satisfies Interface
 })

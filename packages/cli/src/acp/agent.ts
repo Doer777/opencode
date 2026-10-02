@@ -20,6 +20,8 @@ import { ACPService } from "./service"
 import { ACPSessions } from "./sessions"
 import { ACPTurn } from "./turn"
 
+type HandlerContext<Params> = AgentHandlerContext<Params> & { readonly requestId?: JsonRpcId }
+
 // Untraced so request spans parent to the caller's span instead of a setup span that has already ended.
 export const connect = Effect.fnUntraced(function* (client: OpenCodeClient, stream: Stream) {
   const run = Effect.runPromiseWith(yield* Effect.context<Scope.Scope>())
@@ -35,7 +37,7 @@ export const connect = Effect.fnUntraced(function* (client: OpenCodeClient, stre
     ) =>
     (name: string) => {
       const handler = Effect.fn(name)(
-        function* (ctx: AgentHandlerContext<Params> & { readonly requestId?: JsonRpcId }) {
+        function* (ctx: HandlerContext<Params>) {
           const connected = yield* Deferred.await(ready)
           if (ctx.requestId === undefined) return yield* call(connected.service, ctx)
           return yield* call(connected.service, ctx).pipe(
@@ -51,7 +53,7 @@ export const connect = Effect.fnUntraced(function* (client: OpenCodeClient, stre
         Effect.tapCauseIf(Cause.hasDies, (cause) => Effect.logError("ACP request failed", cause)),
         Effect.catchDefect((defect) => Effect.fail(ACPError.toRequestError(ACPError.fromUnknown(defect)))),
       )
-      return (ctx: AgentHandlerContext<Params> & { readonly requestId?: JsonRpcId }) => run(handler(ctx))
+      return (ctx: HandlerContext<Params>) => run(handler(ctx))
     }
   const app = agent({ name: "opencode" })
   const request = <Method extends AgentRequestMethod>(
