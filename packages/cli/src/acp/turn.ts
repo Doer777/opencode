@@ -102,15 +102,34 @@ export const make = Effect.fnUntraced(function* (input: {
     yield* Deferred.await(settled)
   })
 
-  const queueAsk = Effect.fnUntraced(function* (
+  const queueAsk = <A>(
     turn: Turn,
     id: string,
-    reply: (settled: Effect.Effect<void>) => Effect.Effect<void, ACPError.Error | RequestError>,
-  ) {
-    const settled = yield* Deferred.make<void>()
-    turn.subscription.settled.set(id, settled)
-    yield* Queue.offer(turn.subscription.askQueue, reply(Deferred.await(settled)))
-  })
+    ask: Effect.Effect<A, unknown>,
+    fallback: A,
+    respond: (outcome: A) => Effect.Effect<void, ACPError.Error | RequestError>,
+  ) =>
+    Effect.gen(function* () {
+      const settled = yield* Deferred.make<void>()
+      turn.subscription.settled.set(id, settled)
+      yield* Queue.offer(
+        turn.subscription.askQueue,
+        Effect.uninterruptibleMask((restore) =>
+          // The race starts racers in order and stops once one is done, so an earlier cancel never starts the ask.
+          restore(
+            Deferred.await(turn.cancelled).pipe(
+              Effect.as(fallback),
+              Effect.raceFirst(Deferred.await(settled).pipe(Effect.as("settled" as const))),
+              Effect.raceFirst(ask),
+            ),
+          ).pipe(
+            Effect.tapCauseIf(Cause.hasDies, (cause) => Effect.logWarning("ACP ask failed", cause)),
+            Effect.catchCause(() => Effect.succeed(fallback)),
+            Effect.flatMap((outcome) => (outcome === "settled" ? Effect.void : respond(outcome))),
+          ),
+        ).pipe(Effect.withSpan("cli.acp.turn.ask")),
+      )
+    })
 
   const interpret = (turn: Turn, output: ACPTranslate.Output) => {
     switch (output._tag) {
@@ -127,42 +146,37 @@ export const make = Effect.fnUntraced(function* (input: {
                 : Effect.logWarning("ACP child session update failed", cause),
             ),
           )
-      case "PermissionAsk":
-        return queueAsk(turn, output.event.data.id, (settled) =>
-          ACPPermission.reply(
-            {
-              client: input.client,
-              connection: input.connection,
-              event: output.event,
-              sessionID: output.event.data.sessionID,
-              clientSessionID: turn.ctx.sessionID,
-              cwd: turn.ctx.cwd,
-              tool: output.tool,
-              child: output.child,
-              settled,
-            },
-            Deferred.await(turn.cancelled),
-          ),
+      case "PermissionAsk": {
+        const permission = {
+          client: input.client,
+          connection: input.connection,
+          event: output.event,
+          sessionID: output.event.data.sessionID,
+          clientSessionID: turn.ctx.sessionID,
+          cwd: turn.ctx.cwd,
+          tool: output.tool,
+          child: output.child,
+        }
+        return queueAsk(turn, output.event.data.id, ACPPermission.ask(permission), "reject", (decision) =>
+          ACPPermission.respond(permission, decision),
         )
+      }
       case "FormAsk":
         return Effect.gen(function* () {
           const capabilities = yield* Ref.get(input.capabilities)
           const requestedSchema = ACPElicitation.requestedSchema(output.form, capabilities)
           if (!requestedSchema) return yield* ACPElicitation.cancelUnshown(input.client, output.form)
-          yield* queueAsk(turn, output.form.id, (settled) =>
-            ACPElicitation.reply(
-              {
-                client: input.client,
-                connection: input.connection,
-                form: output.form,
-                requestedSchema,
-                clientSessionID: turn.ctx.sessionID,
-                child: output.child,
-                toolCallSent: !turn.background && (!output.child || !turn.ctx.childUpdates),
-                settled,
-              },
-              Deferred.await(turn.cancelled),
-            ),
+          const elicitation = {
+            client: input.client,
+            connection: input.connection,
+            form: output.form,
+            requestedSchema,
+            clientSessionID: turn.ctx.sessionID,
+            child: output.child,
+            toolCallSent: !turn.background && (!output.child || !turn.ctx.childUpdates),
+          }
+          yield* queueAsk(turn, output.form.id, ACPElicitation.ask(elicitation), "cancel", (outcome) =>
+            ACPElicitation.respond(elicitation, outcome),
           )
         })
       case "AskSettled":
@@ -178,7 +192,7 @@ export const make = Effect.fnUntraced(function* (input: {
     const event = yield* take(turn.subscription)
     const folded = yield* Ref.modify(turn.state, (current) => {
       const next =
-        turn.background && !ACPTranslate.belongsToChild(current, event)
+        turn.background && !ACPTranslate.fromTrackedChild(current, event)
           ? { state: current, outputs: [] }
           : ACPTranslate.fold(current, event, turn.ctx)
       return [next, next.state]
@@ -197,7 +211,7 @@ export const make = Effect.fnUntraced(function* (input: {
     }
   })
 
-  const follow = Effect.fnUntraced(function* (turn: Turn) {
+  const followChildren = Effect.fnUntraced(function* (turn: Turn) {
     while (true) {
       const folded = yield* advance(turn)
       if (folded.state.openChildren.size === 0) return yield* asksSettled(turn.subscription)
@@ -283,7 +297,7 @@ export const make = Effect.fnUntraced(function* (input: {
     const state = yield* Ref.get(turn.state)
     if (state.openChildren.size === 0) return yield* close
     // Children outlive a cancelled turn, so their asks still reach the client.
-    const background = follow({
+    const background = followChildren({
       ...turn,
       state: yield* Ref.make(state),
       cancelled: yield* Deferred.make<void>(),
@@ -332,15 +346,17 @@ export const make = Effect.fnUntraced(function* (input: {
   const run = Effect.fn("cli.acp.turn.run")(function* (attached: Attached, prompt: ACPPrompt.Prepared) {
     const capabilities = yield* Ref.get(input.capabilities)
     const state = yield* Ref.make(ACPTranslate.initial)
-    const ctx = {
-      sessionID: attached.id,
-      cwd: attached.cwd,
-      start: prompt.start,
-      childUpdates: capabilities.childSessionUpdates,
-      compaction: capabilities.compaction,
-    }
     const exit = yield* Effect.acquireUseRelease(
-      open(ctx, state),
+      open(
+        {
+          sessionID: attached.id,
+          cwd: attached.cwd,
+          start: prompt.start,
+          childUpdates: capabilities.childSessionUpdates,
+          compaction: capabilities.compaction,
+        },
+        state,
+      ),
       (turn) => execute(attached, prompt, turn),
       (turn, exit) => handoff(attached, turn, exit),
     ).pipe(Effect.interruptible, Effect.exit)

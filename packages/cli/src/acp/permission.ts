@@ -6,7 +6,6 @@ import type { Session } from "@opencode/schema/session"
 import { Patch } from "@opencode/util/patch"
 import { applyPatch } from "diff"
 import { Effect, Option, Schema } from "effect"
-import { ACPAsk } from "./ask"
 import { ACPChild } from "./child"
 import { ACPClient } from "./client"
 import type { ACPConnection } from "./connection"
@@ -34,7 +33,6 @@ type Input = {
   readonly cwd: string
   readonly tool?: Tool
   readonly child?: ACPChild.Session
-  readonly settled: Effect.Effect<void>
 }
 
 const options: PermissionOption[] = [
@@ -45,18 +43,7 @@ const options: PermissionOption[] = [
 
 const decodeFiles = Schema.decodeUnknownOption(Schema.Array(FileDiff.Info))
 
-export const reply = Effect.fn("cli.acp.permission.reply")(function* (input: Input, cancelled: Effect.Effect<void>) {
-  yield* ACPAsk.reply({
-    ask: ask(input),
-    cancelled,
-    settled: input.settled,
-    fallback: "reject" as const,
-    failure: "ACP permission ask failed",
-    respond: (decision) => respond(input, decision),
-  })
-})
-
-const ask = Effect.fnUntraced(function* (input: Input) {
+export const ask = Effect.fnUntraced(function* (input: Input) {
   const toolName = input.tool?.name ?? input.event.data.action
   const toolInput = input.tool?.input ?? input.event.data.metadata ?? {}
   const previews = yield* permissionPreviews(toolName, toolInput, input.event.data.metadata, input.cwd).pipe(
@@ -84,8 +71,7 @@ const ask = Effect.fnUntraced(function* (input: Input) {
   return selected === "once" || selected === "always" ? selected : "reject"
 })
 
-function respond(input: Input, decision: Permission.Reply | "settled") {
-  if (decision === "settled") return Effect.void
+export function respond(input: Input, decision: Permission.Reply) {
   return input.client.permission.reply({ sessionID: input.sessionID, requestID: input.event.data.id, decision }).pipe(
     Effect.catchTag("PermissionNotFoundError", () => Effect.void),
     Effect.catch(ACPClient.classify),

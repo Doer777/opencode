@@ -122,7 +122,7 @@ export function fold(state: TurnState, event: OpenCodeEvent, ctx: TurnContext): 
   return child ? childEvent(state, event, ctx, child) : rootEvent(state, event, ctx)
 }
 
-export function belongsToChild(state: TurnState, event: OpenCodeEvent) {
+export function fromTrackedChild(state: TurnState, event: OpenCodeEvent) {
   const sessionID = event.type === "session.created" ? event.data.parentID : sessionIDFromEvent(event)
   return sessionID !== undefined && state.children.has(sessionID)
 }
@@ -231,9 +231,6 @@ function childEvent(state: TurnState, event: OpenCodeEvent, ctx: TurnContext, ch
   switch (event.type) {
     case "session.execution.started":
       return { state, outputs: childStatus(ctx, child, { type: "status", status: "running" }) }
-    case "session.step.ended":
-    case "session.step.failed":
-      return { state, outputs: [] }
     case "session.execution.succeeded":
       return childEnded(state, ctx, child, { type: "status", status: "completed" })
     case "session.execution.interrupted":
