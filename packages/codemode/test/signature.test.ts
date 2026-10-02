@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, SchemaGetter } from "effect"
 import { CodeMode, Tool, nonFiniteNumberDefinition, signatureJsonSchema } from "../src/index.js"
 import {
   decodeInput,
@@ -969,6 +969,73 @@ describe("JSDoc signatures in catalogs and search results", () => {
     expect(catalog.map(({ signature }) => signature)).toContain(github.signature)
     expect(catalog.map(({ signature }) => signature)).toContain(orders.signature)
     expect(github.signature).toContain("/** Repository owner */")
+  })
+})
+
+describe("empty input signatures agree with decoding", () => {
+  test.each([
+    { name: "a plain empty struct", input: Schema.Struct({}) },
+    {
+      name: "an annotated empty struct",
+      input: Schema.Struct({}).annotate({ identifier: "Empty", description: "No input" }),
+    },
+    { name: "a checked empty struct", input: Schema.Struct({}).check(Schema.makeFilter(() => true)) },
+    {
+      name: "an empty encoded struct transformed to a non-empty struct",
+      input: Schema.Struct({}).pipe(
+        Schema.decodeTo(Schema.Struct({ token: Schema.String }), {
+          decode: SchemaGetter.transform(() => ({ token: "x" })),
+          encode: SchemaGetter.transform(() => ({})),
+        }),
+      ),
+    },
+    { name: "a raw JSON Schema empty object", input: { type: "object", properties: {} } },
+  ])("$name advertises () and runs with zero arguments", async ({ input }) => {
+    const runtime = CodeMode.make({
+      tools: {
+        ping: Tool.make({ description: "Ping", input, output: Schema.String, execute: () => Effect.succeed("pong") }),
+      },
+    })
+    const signature = "tools.ping(): Promise<string>"
+    expect(runtime.catalog[0]?.signature).toBe(signature)
+    const result = await Effect.runPromise(runtime.execute('return search({ query: "tools.ping" })'))
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("search failed")
+    expect(result.value).toMatchObject({ items: [{ signature }] })
+    expect(await Effect.runPromise(runtime.execute("return await tools.ping()"))).toMatchObject({
+      ok: true,
+      value: "pong",
+    })
+  })
+
+  test("a required encoded input transformed to an empty struct keeps its required fields", async () => {
+    const consume = Tool.make({
+      description: "Consume token",
+      input: Schema.Struct({ token: Schema.String }).pipe(
+        Schema.decodeTo(Schema.Struct({}), {
+          decode: SchemaGetter.transform(() => ({})),
+          encode: SchemaGetter.transform(() => ({ token: "x" })),
+        }),
+      ),
+      output: Schema.String,
+      execute: () => Effect.succeed("consumed"),
+    })
+    const runtime = CodeMode.make({ tools: { consume } })
+    const signature = "tools.consume({\n  token: string,\n}): Promise<string>"
+    expect(() => decodeInput(consume, {})).toThrow()
+    expect(runtime.catalog[0]?.signature).toBe(signature)
+    const result = await Effect.runPromise(runtime.execute('return search({ query: "tools.consume" })'))
+    expect(result.ok).toBe(true)
+    if (!result.ok) throw new Error("search failed")
+    expect(result.value).toMatchObject({ items: [{ signature }] })
+    expect(await Effect.runPromise(runtime.execute("return await tools.consume()"))).toMatchObject({
+      ok: false,
+      error: { kind: "InvalidToolInput" },
+    })
+    expect(await Effect.runPromise(runtime.execute('return await tools.consume({ token: "t" })'))).toMatchObject({
+      ok: true,
+      value: "consumed",
+    })
   })
 })
 

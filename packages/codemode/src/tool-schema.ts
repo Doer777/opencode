@@ -292,15 +292,12 @@ export const inputProperties = <R>(tool: Tool<R>): Array<InputProperty> => {
 export const inputTypeScript = <R>(tool: Tool<R>, pretty = false): string =>
   isEffectSchema(tool.input) ? toTypeScript(tool.input, false, pretty) : jsonSchemaToTypeScript(tool.input, pretty)
 
-// Effect 4.0 models an empty Struct as a non-nullish object, so inspect its AST.
+// Effect 4.0 models an empty Struct as a non-nullish object, so inspect the encoded AST callers supply.
 // Raw JSON Schema inputs retain the compact `{}` rendering check.
 export const isEmptyInput = <R>(tool: Tool<R>): boolean => {
   if (!isEffectSchema(tool.input)) return inputTypeScript(tool) === "{}"
-  return (
-    SchemaAST.isObjects(tool.input.ast) &&
-    tool.input.ast.propertySignatures.length === 0 &&
-    tool.input.ast.indexSignatures.length === 0
-  )
+  const encoded = SchemaAST.toEncoded(tool.input.ast)
+  return SchemaAST.isObjects(encoded) && encoded.propertySignatures.length === 0 && encoded.indexSignatures.length === 0
 }
 
 export const outputTypeScript = <R>(tool: Tool<R>, pretty = false): string =>
