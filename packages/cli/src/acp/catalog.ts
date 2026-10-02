@@ -4,7 +4,6 @@ import type { Command } from "@opencode/schema/command"
 import type { Model } from "@opencode/schema/model"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Cause, Deferred, Effect, Exit, Schedule, Semaphore, Stream, SubscriptionRef } from "effect"
-import type { ConfigOptionProvider } from "./config-option"
 import { ACPError } from "./error"
 
 export const builtinCommands = new Map([
@@ -12,12 +11,15 @@ export const builtinCommands = new Map([
 ])
 
 export type Catalog = {
-  readonly providers: ConfigOptionProvider[]
   readonly models: ReadonlyArray<Model.Info>
   readonly defaultModel: Model.Ref
   readonly modes: ReadonlyArray<{ id: Agent.ID; name: string; description?: string }>
   readonly defaultModeID: Agent.ID
   readonly commands: ReadonlyArray<Command.Info>
+}
+
+export function findModel(models: ReadonlyArray<Model.Info>, ref: Model.Ref) {
+  return models.find((model) => model.providerID === ref.providerID && model.id === ref.id)
 }
 
 export interface Interface {
@@ -146,16 +148,13 @@ const read = Effect.fnUntraced(function* (client: OpenCodeClient, cwd: string) {
   const models = modelResult.data.filter((model) => model.enabled)
   const preferred = defaultResult.data
   // The parallel default read can name a model missing from this list.
-  const defaultModel = preferred
-    ? models.find((model) => model.providerID === preferred.providerID && model.id === preferred.id)
-    : models[0]
+  const defaultModel = preferred ? findModel(models, preferred) : models[0]
   if (!defaultModel) return yield* new ACPError.CatalogNotReadyError({ reason: "models" })
   const agents = agentResult.data.filter((agent) => agent.mode !== "subagent" && !agent.hidden)
   // Core lists its resolved default agent first, the same one a new session runs.
   const defaultAgent = agents[0]
   if (!defaultAgent) return yield* new ACPError.CatalogNotReadyError({ reason: "agents" })
   return {
-    providers: providers(models),
     models,
     defaultModel: {
       providerID: defaultModel.providerID,
@@ -167,17 +166,5 @@ const read = Effect.fnUntraced(function* (client: OpenCodeClient, cwd: string) {
     commands: commandResult.data.filter((command) => !builtinCommands.has(command.name)),
   } satisfies Catalog
 })
-
-function providers(models: ReadonlyArray<Model.Info>) {
-  return Array.from(new Set(models.map((model) => model.providerID)))
-    .toSorted()
-    .map((providerID) => ({
-      id: providerID,
-      name: providerID,
-      models: models
-        .filter((model) => model.providerID === providerID)
-        .map((model) => ({ id: model.id, name: model.name, variants: model.variants.map((variant) => variant.id) })),
-    }))
-}
 
 export * as ACPCatalog from "./catalog"

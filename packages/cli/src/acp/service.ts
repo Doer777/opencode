@@ -36,7 +36,7 @@ import type {
 } from "@agentclientprotocol/sdk"
 import { OPENCODE_VERSION } from "../version"
 import { ACPCapabilities, type Capabilities } from "./capabilities"
-import type { ACPCatalog, Catalog } from "./catalog"
+import { findModel, type ACPCatalog, type Catalog } from "./catalog"
 import { ACPClient } from "./client"
 import { configOptions, currentModel, DEFAULT_VARIANT_VALUE, parseModelSelection } from "./config-option"
 import type { ACPConnection } from "./connection"
@@ -271,11 +271,9 @@ const supportedMcpServers = Effect.fnUntraced(function* (servers: readonly McpSe
 })
 
 const requireModel = Effect.fnUntraced(function* (catalog: Catalog, modelID: string, current: Model.Ref) {
-  const selected = parseModelSelection(modelID, catalog.providers)
-  const model = catalog.models.find(
-    (item) => item.providerID === selected.model.providerID && item.id === selected.model.modelID,
-  )
-  if (!model) return yield* new ACPError.InvalidModelError({ providerId: selected.model.providerID, modelId: modelID })
+  const selected = parseModelSelection(modelID, catalog)
+  const model = findModel(catalog.models, selected)
+  if (!model) return yield* new ACPError.InvalidModelError({ providerId: selected.providerID, modelId: modelID })
   const selectedVariant = model.variants.find((variant) => variant.id === selected.variant)
   if (selected.variant && !selectedVariant) return yield* new ACPError.InvalidEffortError({ effort: selected.variant })
   const variant =
@@ -289,7 +287,7 @@ const requireModel = Effect.fnUntraced(function* (catalog: Catalog, modelID: str
 })
 
 const requireEffort = Effect.fnUntraced(function* (catalog: Catalog, effort: string, current: Model.Ref) {
-  const model = catalog.models.find((item) => item.providerID === current.providerID && item.id === current.id)
+  const model = findModel(catalog.models, current)
   if (!model || (effort !== DEFAULT_VARIANT_VALUE && !model.variants.some((variant) => variant.id === effort)))
     return yield* new ACPError.InvalidEffortError({ effort })
   return { ...current, variant: Model.VariantID.make(effort) } satisfies Model.Ref
