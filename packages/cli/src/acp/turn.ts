@@ -1,7 +1,5 @@
 import type { CancelNotification, PromptRequest, PromptResponse, RequestError } from "@agentclientprotocol/sdk"
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client/effect"
-import type { Command } from "@opencode/schema/command"
-import { SessionMessage } from "@opencode/schema/session-message"
 import { TokenUsage } from "@opencode/schema/token-usage"
 import {
   Cause,
@@ -18,18 +16,16 @@ import {
   Scope,
   Stream,
 } from "effect"
-import { access, constants } from "node:fs/promises"
-import { fileURLToPath } from "node:url"
 import type { Capabilities } from "./capabilities"
-import { builtinCommands, type ACPCatalog, type Catalog } from "./catalog"
+import type { ACPCatalog } from "./catalog"
 import { ACPChild } from "./child"
 import { ACPClient } from "./client"
 import { currentModel } from "./config-option"
 import type { ACPConnection } from "./connection"
-import { linkReference, promptContentToParts, type PromptPart } from "./content"
 import { ACPElicitation } from "./elicitation"
 import { ACPError } from "./error"
 import { ACPPermission } from "./permission"
+import { ACPPrompt } from "./prompt"
 import type { ACPSessions, Attached } from "./sessions"
 import { ACPTranslate } from "./translate"
 
@@ -44,15 +40,6 @@ export interface Interface {
 export const CancelDrainTimeout = Context.Reference<Duration.Input>("@opencode/cli/acp/Turn/CancelDrainTimeout", {
   defaultValue: () => "5 seconds",
 })
-
-type PreparedPrompt = {
-  readonly start: ACPTranslate.TurnStart
-  readonly text: string
-  readonly files: Array<{ readonly uri: string; readonly name?: string }>
-  readonly synthetic: ReadonlyArray<string>
-  readonly slash?: { readonly name: string; readonly args: string }
-  readonly command?: Command.Info
-}
 
 type PermissionAsk = Extract<ACPTranslate.Output, { readonly _tag: "PermissionAsk" }>
 
@@ -205,7 +192,7 @@ export const make = Effect.fnUntraced(function* (input: {
     }
   })
 
-  const submit = Effect.fnUntraced(function* (attached: Attached, prompt: PreparedPrompt) {
+  const submit = Effect.fnUntraced(function* (attached: Attached, prompt: ACPPrompt.Prepared) {
     const sessionID = attached.id
     if (prompt.synthetic.length > 0) {
       yield* input.client.session
@@ -266,7 +253,7 @@ export const make = Effect.fnUntraced(function* (input: {
 
   const execute = (
     attached: Attached,
-    prompt: PreparedPrompt,
+    prompt: ACPPrompt.Prepared,
     ctx: ACPTranslate.Context,
     state: Ref.Ref<ACPTranslate.TurnState>,
   ) =>
@@ -346,7 +333,7 @@ export const make = Effect.fnUntraced(function* (input: {
   )
 
   // Forked uninterruptible: interruption reaches only `execute`, so the fiber still settles with a response.
-  const run = Effect.fn("cli.acp.turn.run")(function* (attached: Attached, prompt: PreparedPrompt) {
+  const run = Effect.fn("cli.acp.turn.run")(function* (attached: Attached, prompt: ACPPrompt.Prepared) {
     const capabilities = yield* Ref.get(input.capabilities)
     const state = yield* Ref.make(ACPTranslate.initial)
     const ctx: ACPTranslate.Context = {
@@ -365,13 +352,7 @@ export const make = Effect.fnUntraced(function* (input: {
     prompt: Effect.fnUntraced(function* (params, signal) {
       const attached = yield* input.sessions.require(params.sessionId)
       const catalog = yield* input.catalog.get(attached.cwd)
-      if (params.prompt.some((block) => block.type === "image" && !block.data && !block.uri)) {
-        return yield* new ACPError.InvalidRequestError({ message: "image content has no data or uri", field: "prompt" })
-      }
-      const parts = yield* Effect.forEach(promptContentToParts(params.prompt), referenceUnreadableFile, {
-        concurrency: "unbounded",
-      })
-      const prompt = preparePrompt(catalog, parts, SessionMessage.ID.create())
+      const prompt = yield* ACPPrompt.prepare(catalog, params.prompt)
       // Synchronous, so concurrent prompts for one session cannot both register.
       const turn = yield* Effect.withFiber((fiber) => {
         if (FiberMap.hasUnsafe(turns, attached.id)) {
@@ -411,42 +392,6 @@ function aborted(signal: AbortSignal) {
     signal.addEventListener("abort", abort, { once: true })
     return Effect.sync(() => signal.removeEventListener("abort", abort))
   })
-}
-
-function preparePrompt(catalog: Catalog, parts: readonly PromptPart[], messageID: SessionMessage.ID): PreparedPrompt {
-  const visible = parts.filter((part) => part.type !== "text" || (!part.synthetic && !part.ignored))
-  const synthetic = parts.flatMap((part) => (part.type === "text" && part.synthetic ? [part.text] : []))
-  const text = visible.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
-  const files = visible.flatMap((part) => (part.type === "file" ? [{ uri: part.url, name: part.filename }] : []))
-  const slash = detectSlashCommand(text)
-  const command = slash ? catalog.commands.find((item) => item.name === slash.name) : undefined
-  return {
-    start:
-      slash && builtinCommands.get(slash.name)?.start === "compaction"
-        ? { type: "compaction", id: messageID }
-        : { type: "input", id: messageID },
-    text,
-    files,
-    synthetic,
-    slash,
-    command,
-  }
-}
-
-function referenceUnreadableFile(part: PromptPart) {
-  if (part.type !== "file" || !part.url.startsWith("file://")) return Effect.succeed(part)
-  return Effect.tryPromise(() => access(fileURLToPath(part.url), constants.R_OK)).pipe(
-    Effect.as(part),
-    Effect.orElseSucceed(() => linkReference(part.filename, part.url)),
-  )
-}
-
-function detectSlashCommand(text: string) {
-  const value = text.trim()
-  if (!value.startsWith("/")) return undefined
-  const [name, ...rest] = value.slice(1).split(/\s+/)
-  if (!name) return undefined
-  return { name, args: rest.join(" ").trim() }
 }
 
 export * as ACPTurn from "./turn"
