@@ -1,4 +1,5 @@
 import type { ToolDefinition } from "@opencode/ai"
+import { nonFiniteNumberDefinition, signatureJsonSchema } from "@opencode/codemode"
 import { Tool } from "@opencode/schema/tool"
 import type { StandardJSONSchemaV1, StandardSchemaV1 } from "@standard-schema/spec"
 import { Cache, Effect, JsonPointer, JsonSchema, Schema, SchemaIssue, SchemaRepresentation } from "effect"
@@ -17,12 +18,13 @@ const jsonSchemas = Effect.runSync(
   }),
 )
 
-export const definition = (tool: Tool.Info<any, any>): ToolDefinition => ({
+// Code Mode definitions keep Effect's non-finite number marker so their signatures render plain `number`.
+export const definition = (tool: Tool.Info<any, any>, codeMode = false): ToolDefinition => ({
   type: "tool",
   name: effectiveName(tool),
   description: tool.description,
-  inputSchema: inputJsonSchema(tool.input),
-  ...(tool.output === undefined ? {} : { outputSchema: outputJsonSchema(tool.output) }),
+  inputSchema: inputJsonSchema(tool.input, codeMode),
+  ...(tool.output === undefined ? {} : { outputSchema: outputJsonSchema(tool.output, codeMode) }),
 })
 
 export const execute = (tool: Tool.Info<any, any>, input: unknown, context: Tool.Context) =>
@@ -152,11 +154,11 @@ const validateStandard = (
     }),
   )
 
-const inputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema => {
+const inputJsonSchema = (schema: Tool.ValueSchema<any>, codeMode: boolean): JsonSchema.JsonSchema => {
   if (schema === undefined || schema === null) return {}
   if (isStandardSchema(schema)) return standardJsonSchema(schema, "input")
   if (!Schema.isSchema(schema)) return schema
-  const json = toJsonSchema(schema)
+  const json = toJsonSchema(schema, codeMode)
   // Empty Effect structs describe non-null values, but tool parameters must be
   // objects. Normalize after inlining named schemas, retaining their metadata.
   if (
@@ -175,9 +177,9 @@ const inputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema =
   return json
 }
 
-const outputJsonSchema = (schema: Tool.ValueSchema<any>): JsonSchema.JsonSchema => {
+const outputJsonSchema = (schema: Tool.ValueSchema<any>, codeMode: boolean): JsonSchema.JsonSchema => {
   if (isStandardSchema(schema)) return standardJsonSchema(schema, "output")
-  return Schema.isSchema(schema) ? toJsonSchema(schema) : schema
+  return Schema.isSchema(schema) ? toJsonSchema(schema, codeMode) : schema
 }
 
 const standardJsonSchema = (schema: StandardSchemaV1<any, any>, io: "input" | "output"): JsonSchema.JsonSchema => {
@@ -186,20 +188,24 @@ const standardJsonSchema = (schema: StandardSchemaV1<any, any>, io: "input" | "o
   throw new Error(`Schema vendor "${schema["~standard"].vendor}" does not support JSON Schema conversion`)
 }
 
-const toJsonSchema = (schema: Schema.Top): JsonSchema.JsonSchema => {
-  const document = Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" })
+const toJsonSchema = (schema: Schema.Top, codeMode: boolean): JsonSchema.JsonSchema => {
+  const document = codeMode
+    ? signatureJsonSchema(schema)
+    : Schema.toJsonSchemaDocument(schema, { onExcessProperty: "error" })
   // Effect emits valid JSON Schema that some inference providers handle poorly. Simplify it
   // without changing validation: `{ type: "integer", allOf: [{ minimum: 0 }] }` becomes
   // `{ type: "integer", minimum: 0 }` only when no keyword would be overwritten. Named schemas
   // emit `$ref` plus root `$defs`; inline acyclic local references so providers receive the full
   // nested schema directly, then remove unused `$defs`. Recursive references stay intact because
-  // expanding them would never terminate.
+  // expanding them would never terminate. Code Mode's reserved number marker stays a reference too.
   const normalized = flattenAllOf(
     Object.keys(document.definitions).length === 0
       ? document.schema
       : { ...document.schema, $defs: document.definitions },
   )
-  return dropDefinitionsIfResolved(inlineLocalReferences(normalized)) as JsonSchema.JsonSchema
+  return dropDefinitionsIfResolved(
+    inlineLocalReferences(normalized, undefined, new Set(codeMode ? [nonFiniteNumberDefinition] : [])),
+  ) as JsonSchema.JsonSchema
 }
 
 const flattenAllOf = (value: unknown): unknown => {

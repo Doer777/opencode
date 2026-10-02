@@ -9,12 +9,6 @@ export const identifierSegment = /^[A-Za-z_$][A-Za-z0-9_$]*$/
 
 const renderKey = (name: string): string => (identifierSegment.test(name) ? name : JSON.stringify(name))
 
-const effectNumberSentinel = (schema: JsonSchema) =>
-  schema.type === "string" &&
-  Array.isArray(schema.enum) &&
-  schema.enum.length === 1 &&
-  (schema.enum[0] === "NaN" || schema.enum[0] === "Infinity" || schema.enum[0] === "-Infinity")
-
 // Effect's JSON codec encodes every unchecked `number` as `finite | nonFiniteLiterals`, sharing one literal-union
 // AST. Code Mode decodes the Type side, which rejects those strings, so that exact AST is extracted into a reserved
 // definition and rendered as `number`, while authored literal unions keep their alternatives.
@@ -22,12 +16,34 @@ const effectNumberJson = SchemaAST.toEncoded(Schema.toCodecJson(Schema.Number).a
 const effectNonFiniteNumbers = SchemaAST.isUnion(effectNumberJson)
   ? effectNumberJson.types.find(SchemaAST.isUnion)
   : undefined
-const nonFiniteNumberDefinition = "codemode/NonFiniteNumber"
+export const nonFiniteNumberDefinition = "codemode/NonFiniteNumber"
+
+/**
+ * Effect JSON Schema document as Code Mode renders it. Effect's synthetic non-finite number alternatives become a
+ * `$ref` to `nonFiniteNumberDefinition`; hosts that rewrite the document must keep that reference so
+ * `jsonSchemaToTypeScript` can still distinguish it from an authored literal union.
+ */
+export const signatureJsonSchema = (schema: Schema.Top) =>
+  Schema.toJsonSchemaDocument(schema, {
+    onExcessProperty: "error",
+    referencePolicy: (input) => (input.ast === effectNonFiniteNumbers ? nonFiniteNumberDefinition : input.identifier),
+  })
 
 const definitionName = (ref: string): string | undefined => {
   const tokens = JsonPointer.parseUriFragment(ref)
   return tokens?.length === 2 && (tokens[0] === "$defs" || tokens[0] === "definitions") ? tokens[1] : undefined
 }
+
+const nonFiniteNumberReference = (schema: JsonSchema) =>
+  schema.$ref !== undefined && definitionName(schema.$ref) === nonFiniteNumberDefinition
+
+// Raw schemas carry the reserved reference when a host preserved it, or other generators' singleton sentinels.
+const effectNumberSentinel = (schema: JsonSchema) =>
+  nonFiniteNumberReference(schema) ||
+  (schema.type === "string" &&
+    Array.isArray(schema.enum) &&
+    schema.enum.length === 1 &&
+    (schema.enum[0] === "NaN" || schema.enum[0] === "Infinity" || schema.enum[0] === "-Infinity"))
 
 const intersection = (members: ReadonlyArray<string>): string => {
   const concrete = members.filter((member) => member !== "unknown")
@@ -215,18 +231,14 @@ const renderSchema = (
 
 export const toTypeScript = (schema: Schema.Top, decoded = false, pretty = false): string => {
   try {
-    const visible = decoded ? Schema.toType(schema) : schema
-    const document = Schema.toJsonSchemaDocument(visible, {
-      onExcessProperty: "error",
-      referencePolicy: (input) => (input.ast === effectNonFiniteNumbers ? nonFiniteNumberDefinition : input.identifier),
-    }) as {
+    const document = signatureJsonSchema(decoded ? Schema.toType(schema) : schema) as {
       readonly schema: JsonSchema
-      readonly definitions?: Readonly<Record<string, JsonSchema>>
+      readonly definitions: Readonly<Record<string, JsonSchema>>
     }
     return renderSchema(document.schema, {
-      definitions: document.definitions ?? {},
+      definitions: document.definitions,
       pretty,
-      numberSentinel: (item) => item.$ref !== undefined && definitionName(item.$ref) === nonFiniteNumberDefinition,
+      numberSentinel: nonFiniteNumberReference,
     })
   } catch {
     return "unknown"

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { Effect, Schema } from "effect"
-import { CodeMode, Tool } from "../src/index.js"
+import { CodeMode, Tool, nonFiniteNumberDefinition, signatureJsonSchema } from "../src/index.js"
 import {
   decodeInput,
   inputProperties,
@@ -738,6 +738,29 @@ describe("union schemas render every alternative", () => {
         anyOf: [{ type: "number" }, ...literals.map((value) => ({ type: "string", enum: [value] }))],
       }),
     ).toBe("number")
+  })
+
+  test("raw schemas exported by signatureJsonSchema keep number provenance", () => {
+    const schema = Schema.Struct({
+      amount: Schema.Number,
+      maybe: Schema.optionalKey(Schema.NullOr(Schema.Number)),
+      sentinel: Schema.Literals(["NaN", "Infinity", "-Infinity"]),
+    })
+    const document = signatureJsonSchema(schema)
+    const raw = { ...document.schema, $defs: document.definitions } as Tool.JsonSchema
+    expect(Object.keys(document.definitions)).toEqual([nonFiniteNumberDefinition])
+    const rendered = '{ amount: number; maybe?: number | null; sentinel: "NaN" | "Infinity" | "-Infinity" }'
+    expect(jsonSchemaToTypeScript(raw)).toBe(rendered)
+    expect(
+      inputTypeScript(Tool.make({ description: "n", input: schema, output: schema, execute: Effect.succeed })),
+    ).toBe(rendered)
+    // Only the reserved definition name carries provenance; an authored definition keeps its strings.
+    expect(
+      jsonSchemaToTypeScript({
+        anyOf: [{ type: "number" }, { $ref: "#/$defs/Other" }],
+        $defs: { Other: { type: "string", enum: ["Infinity", "-Infinity", "NaN"] } },
+      }),
+    ).toBe('number | "Infinity" | "-Infinity" | "NaN"')
   })
 
   test("keeps unrelated and partial grouped string enums alongside numbers", () => {
