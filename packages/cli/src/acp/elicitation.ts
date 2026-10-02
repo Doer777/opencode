@@ -6,7 +6,8 @@ import type {
 } from "@agentclientprotocol/sdk"
 import type { OpenCodeClient } from "@opencode/client/effect"
 import { Form } from "@opencode/schema/form"
-import { Cause, Effect, Option, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
+import { ACPAsk } from "./ask"
 import type { Capabilities } from "./capabilities"
 import { ACPChild } from "./child"
 import { ACPClient } from "./client"
@@ -36,20 +37,14 @@ type Input = {
 type Outcome = Form.Answer | "cancel" | "settled"
 
 export const reply = Effect.fn("cli.acp.elicitation.reply")(function* (input: Input, cancelled: Effect.Effect<void>) {
-  yield* Effect.uninterruptibleMask((restore) =>
-    // The race starts racers in order and stops once one is done, so an earlier cancel never starts the ask.
-    restore(
-      cancelled.pipe(
-        Effect.as("cancel" as const),
-        Effect.raceFirst(input.settled.pipe(Effect.as("settled" as const))),
-        Effect.raceFirst(ask(input)),
-      ),
-    ).pipe(
-      Effect.tapCauseIf(Cause.hasDies, (cause) => Effect.logWarning("ACP elicitation failed", cause)),
-      Effect.catchCause(() => Effect.succeed("cancel" as const)),
-      Effect.flatMap((outcome) => respond(input, outcome)),
-    ),
-  )
+  yield* ACPAsk.reply({
+    ask: ask(input),
+    cancelled,
+    settled: input.settled,
+    fallback: "cancel" as const,
+    failure: "ACP elicitation failed",
+    respond: (outcome) => respond(input, outcome),
+  })
 })
 
 export const UnshownQuestionMessage =

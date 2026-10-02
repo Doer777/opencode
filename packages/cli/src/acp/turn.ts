@@ -78,7 +78,7 @@ export const make = Effect.fnUntraced(function* (input: {
     yield* Queue.take(subscription.asks).pipe(
       Effect.flatten,
       Effect.catchCause((cause) =>
-        Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.logWarning("ACP permission reply failed", cause),
+        Cause.hasInterruptsOnly(cause) ? Effect.void : Effect.logWarning("ACP ask reply failed", cause),
       ),
       Effect.forever,
       Effect.forkIn(subscriptionScope),

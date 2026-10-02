@@ -5,7 +5,8 @@ import type { Permission } from "@opencode/schema/permission"
 import type { Session } from "@opencode/schema/session"
 import { Patch } from "@opencode/util/patch"
 import { applyPatch } from "diff"
-import { Cause, Effect, Option, Schema } from "effect"
+import { Effect, Option, Schema } from "effect"
+import { ACPAsk } from "./ask"
 import { ACPChild } from "./child"
 import { ACPClient } from "./client"
 import type { ACPConnection } from "./connection"
@@ -36,20 +37,14 @@ const options: PermissionOption[] = [
 const decodeFiles = Schema.decodeUnknownOption(Schema.Array(FileDiff.Info))
 
 export const reply = Effect.fn("cli.acp.permission.reply")(function* (input: Input, cancelled: Effect.Effect<void>) {
-  yield* Effect.uninterruptibleMask((restore) =>
-    // The race starts racers in order and stops once one is done, so an earlier cancel never starts the ask.
-    restore(
-      cancelled.pipe(
-        Effect.as("reject" as const),
-        Effect.raceFirst(input.settled.pipe(Effect.as("settled" as const))),
-        Effect.raceFirst(ask(input)),
-      ),
-    ).pipe(
-      Effect.tapCauseIf(Cause.hasDies, (cause) => Effect.logWarning("ACP permission ask failed", cause)),
-      Effect.catchCause(() => Effect.succeed("reject" as const)),
-      Effect.flatMap((decision) => respond(input, decision)),
-    ),
-  )
+  yield* ACPAsk.reply({
+    ask: ask(input),
+    cancelled,
+    settled: input.settled,
+    fallback: "reject" as const,
+    failure: "ACP permission ask failed",
+    respond: (decision) => respond(input, decision),
+  })
 })
 
 const ask = Effect.fnUntraced(function* (input: Input) {
