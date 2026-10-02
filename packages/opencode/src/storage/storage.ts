@@ -301,12 +301,10 @@ const layer = Layer.effect(
     const list: Interface["list"] = Effect.fn("Storage.list")(function* (prefix: string[]) {
       const dir = (yield* state).dir
       const cwd = path.join(dir, ...prefix)
-      const result = yield* fs
-        .glob("**/*", {
-          cwd,
-          include: "file",
-        })
-        .pipe(Effect.catch(() => Effect.succeed<string[]>([])))
+      const result = yield* fs.glob("**/*", {
+        cwd,
+        include: "file",
+      })
       return result
         .map((x) => [...prefix, ...x.slice(0, -5).split(path.sep)])
         .toSorted((a, b) => a.join("/").localeCompare(b.join("/")))

@@ -35,7 +35,7 @@ function remap(root: string, file: string) {
   return file
 }
 
-function remappedFs(root: string) {
+function remappedFs(root: string, failGlob?: (cwd: string) => boolean) {
   return Layer.effect(
     FSUtil.Service,
     Effect.gen(function* () {
@@ -48,7 +48,12 @@ function remappedFs(root: string) {
         readFileString: (file) => fs.readFileString(remap(root, file)),
         remove: (file) => fs.remove(remap(root, file)),
         glob: (pattern, options) =>
-          fs.glob(pattern, options?.cwd ? { ...options, cwd: remap(root, options.cwd) } : options),
+          Effect.suspend(() => {
+            const cwd = options?.cwd ? remap(root, options.cwd) : undefined
+            if (cwd && failGlob?.(cwd))
+              return Effect.fail(new FSUtil.FileSystemError({ method: "glob", cause: new Error("permission denied") }))
+            return fs.glob(pattern, cwd ? { ...options, cwd } : options)
+          }),
       })
     }),
   ).pipe(Layer.provide(LayerNode.compile(FSUtil.node)))
@@ -57,8 +62,8 @@ function remappedFs(root: string) {
 // Layer.fresh forces a new Storage instance — without it, Effect's in-test layer cache
 // returns the outer testEffect's Storage (which uses the real FSUtil), not a new
 // one built on top of remappedFs.
-const remappedStorage = (root: string) =>
-  Layer.fresh(LayerNode.compile(Storage.node, [[FSUtil.node, remappedFs(root)]]))
+const remappedStorage = (root: string, failGlob?: (cwd: string) => boolean) =>
+  Layer.fresh(LayerNode.compile(Storage.node, [[FSUtil.node, remappedFs(root, failGlob)]]))
 
 describe("Storage", () => {
   it.live("round-trips JSON content", () =>
@@ -118,6 +123,21 @@ describe("Storage", () => {
     Effect.gen(function* () {
       const { root, svc } = yield* scope()
       expect(yield* svc.list([...root, "nonexistent"])).toEqual([])
+    }),
+  )
+
+  it.live("list propagates filesystem errors", () =>
+    Effect.gen(function* () {
+      const tmp = yield* tmpdirScoped()
+      const prefix = ["storage_test", crypto.randomUUID(), "permission"]
+      const cwd = path.join(tmp, "storage", ...prefix)
+
+      yield* Effect.gen(function* () {
+        const svc = yield* Storage.Service
+        const error = yield* Effect.flip(svc.list(prefix))
+        expect(error).toBeInstanceOf(FSUtil.FileSystemError)
+        expect(error.message).toContain("permission denied")
+      }).pipe(Effect.provide(remappedStorage(tmp, (target) => target === cwd)))
     }),
   )
 

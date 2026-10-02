@@ -4,6 +4,19 @@
 - The default branch in this repo is `dev`.
 - Local `main` ref may not exist; use `dev` or `origin/dev` for diffs.
 
+## Project Map
+
+- Root package scripts are intentionally thin; many tasks are package-scoped. Start with the package that owns the behavior you are changing (for example `packages/core`, `packages/server`, `packages/client`, `packages/opencode`, `packages/tui`, or `packages/app`).
+- For end-user product work, the app entrypoints live under `packages/opencode`, `packages/console`, `packages/app`, `packages/desktop`, and `packages/web`; shared protocol and schema types live under `packages/protocol`, `packages/schema`, and `packages/core`.
+- See [README.md](README.md) and [CONTRIBUTING.md](CONTRIBUTING.md) for project-level expectations and contribution flow; use them as the starting point before making a change.
+- The root `package.json` intentionally blocks root test execution (`npm test`/`bun test` at repo root). Run validation from the relevant package directory instead.
+
+## Common Validation
+
+- Prefer `bun typecheck` inside the relevant package directory for TypeScript validation; avoid running `tsc` directly.
+- For code generation or SDK updates, follow the repository-specific generation steps above rather than manually editing generated outputs.
+- Before broad refactors, check whether the relevant package already has local scripts or patterns in its `package.json` rather than assuming a global workflow.
+
 ## Branch Names
 
 Use a short branch name of at most three words, separated by hyphens. Do not use slashes or type prefixes such as `feat/` or `fix/`.
