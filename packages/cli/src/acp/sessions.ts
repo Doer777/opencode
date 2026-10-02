@@ -6,7 +6,7 @@ import type { Session } from "@opencode/schema/session"
 import { Cause, Deferred, Effect, Exit, Queue, Ref, Scope, Stream } from "effect"
 import type { ACPCatalog, Catalog } from "./catalog"
 import { ACPClient } from "./client"
-import { availableCommands, configOptions, type Selection } from "./config-option"
+import { availableCommands, configOptions, type Change, type Selection } from "./config-option"
 import { ACPConnection } from "./connection"
 import { ACPError } from "./error"
 
@@ -28,6 +28,7 @@ export interface Interface {
   readonly release: (attached: Attached) => Effect.Effect<void>
   readonly require: (sessionID: string) => Effect.Effect<Attached, ACPError.SessionNotFoundError>
   readonly fork: (attached: Attached, effect: Effect.Effect<void>) => Effect.Effect<void, ACPError.SessionNotFoundError>
+  readonly select: (attached: Attached, change: Change) => Effect.Effect<void, ACPError.Error>
 }
 
 type Entry = {
@@ -178,6 +179,17 @@ export const make = Effect.fnUntraced(function* (input: {
       const entry = sessions.get(attached.id)
       if (entry?.attached !== attached) return yield* new ACPError.SessionNotFoundError({ sessionId: attached.id })
       yield* Effect.forkIn(effect, entry.scope, { startImmediately: true })
+    }),
+    // Update selection before switching so the echoed event is a no-op.
+    select: Effect.fnUntraced(function* (attached, change) {
+      yield* Ref.update(attached.selection, (selection) => ({ ...selection, ...change }))
+      if ("model" in change)
+        return yield* input.client.session
+          .switchModel({ sessionID: attached.id, model: change.model })
+          .pipe(Effect.catch(ACPClient.classify))
+      yield* input.client.session
+        .switchAgent({ sessionID: attached.id, agent: change.modeID })
+        .pipe(Effect.catch(ACPClient.classify))
     }),
   } satisfies Interface
 })

@@ -2,15 +2,18 @@ import type { SessionConfigOption } from "@agentclientprotocol/sdk"
 import type { Agent } from "@opencode/schema/agent"
 import { Model } from "@opencode/schema/model"
 import { Provider } from "@opencode/schema/provider"
-import { Order } from "effect"
+import { Effect, Order } from "effect"
 import { builtinCommands, findModel, type Catalog } from "./catalog"
+import { ACPError } from "./error"
 
-export const DEFAULT_VARIANT_VALUE = "default"
+const DEFAULT_VARIANT_VALUE = "default"
 
 export type Selection = {
   readonly model?: Model.Ref
   readonly modeID?: Agent.ID
 }
+
+export type Change = { readonly model: Model.Ref } | { readonly modeID: Agent.ID }
 
 export function currentModel(catalog: Catalog, selection: Selection) {
   return selection.model ?? catalog.defaultModel
@@ -71,6 +74,28 @@ export function availableCommands(catalog: Catalog) {
   ]
 }
 
+export const resolveChange = Effect.fnUntraced(function* (
+  catalog: Catalog,
+  selection: Selection,
+  configId: string,
+  value: string,
+) {
+  const current = currentModel(catalog, selection)
+  switch (configId) {
+    case "model":
+      return { model: yield* requireModel(catalog, value, current) }
+    case "effort":
+      return { model: yield* requireEffort(catalog, value, current) }
+    case "mode": {
+      const mode = catalog.modes.find((item) => item.id === value)
+      if (!mode) return yield* new ACPError.InvalidModeError({ mode: value })
+      return { modeID: mode.id }
+    }
+    default:
+      return yield* new ACPError.InvalidConfigOptionError({ configId })
+  }
+})
+
 export function parseModelSelection(value: string, catalog: Catalog): Model.Ref {
   const providerID = catalog.models
     .map((model) => model.providerID)
@@ -91,6 +116,29 @@ export function parseModelSelection(value: string, catalog: Catalog): Model.Ref 
     return { providerID, id: baseID, variant: Model.VariantID.make(variant) }
   return { providerID, id }
 }
+
+const requireModel = Effect.fnUntraced(function* (catalog: Catalog, value: string, current: Model.Ref) {
+  const selected = parseModelSelection(value, catalog)
+  const model = findModel(catalog.models, selected)
+  if (!model) return yield* new ACPError.InvalidModelError({ providerId: selected.providerID, modelId: value })
+  const selectedVariant = model.variants.find((variant) => variant.id === selected.variant)
+  if (selected.variant && !selectedVariant) return yield* new ACPError.InvalidEffortError({ effort: selected.variant })
+  const variant =
+    selectedVariant?.id ??
+    (current.providerID === model.providerID &&
+    current.id === model.id &&
+    (current.variant === DEFAULT_VARIANT_VALUE || model.variants.some((variant) => variant.id === current.variant))
+      ? current.variant
+      : undefined)
+  return { providerID: model.providerID, id: model.id, variant } satisfies Model.Ref
+})
+
+const requireEffort = Effect.fnUntraced(function* (catalog: Catalog, effort: string, current: Model.Ref) {
+  const model = findModel(catalog.models, current)
+  if (!model || (effort !== DEFAULT_VARIANT_VALUE && !model.variants.some((variant) => variant.id === effort)))
+    return yield* new ACPError.InvalidEffortError({ effort })
+  return { ...current, variant: Model.VariantID.make(effort) } satisfies Model.Ref
+})
 
 function selectVariant(variant: string | undefined, variants: readonly string[]) {
   if (!variant || variant === DEFAULT_VARIANT_VALUE) return DEFAULT_VARIANT_VALUE
